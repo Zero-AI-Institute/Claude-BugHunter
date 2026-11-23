@@ -77,7 +77,9 @@ Files in this folder:
 
 ## Workflow
 
-1. **Plan** - fill in `scope.md` from the program page. Use the `bb-methodology`
+1. **Plan** - fill in `scope.md` from the program page, or run
+   `cbh scope import <platform>:<handle> -o scope.md` to import the program's
+   published scope (then read `## Needs manual review`). Use the `bb-methodology`
    and `osint-methodology` skills. Note Focus Areas and Bounty bands.
 
 2. **Recon** - `offensive-osint`, `web2-recon`, and `bb-local-toolkit` for
@@ -121,7 +123,8 @@ Files in this folder:
     $scopeBody = @'
 
 > Parse this from the program page (Bugcrowd / HackerOne / etc.) before
-> doing any active testing. `/scope <asset>` can verify individual assets.
+> doing any active testing, or import it: `cbh scope import h1:<handle> -o scope.md`
+> (also bugcrowd: / intigriti: / yeswehack:). `/scope <asset>` verifies individual assets.
 
 ## In scope
 
@@ -278,7 +281,7 @@ Thumbs.db
 
             $hosts = @($recon.assets | Where-Object { $_.url -and $_.host })
             $ranked = @($recon.ranked_surface | Where-Object { $_.url -or $_.host })
-            $scopeLines = @('', '', '## Recon-seeded live hosts (from cbh manifest - VERIFY in-scope before testing)', '')
+            $scopeLines = @('', '', '## Recon-seeded live hosts (from cbh manifest - UNVERIFIED, add to In scope section before testing)', '')
             $scopeLines += $hosts | ForEach-Object { "- $($_.host)" }
             $noteLines = @('', '', '## Ranked surface (from recon manifest)', '')
             $noteLines += foreach ($item in $ranked) {
