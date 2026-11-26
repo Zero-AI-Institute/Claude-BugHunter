@@ -6,7 +6,42 @@ versioning is loosely [SemVer](https://semver.org/) at the bundle level.
 
 ## [Unreleased]
 
+### Added
+- **`regression-hunting` skill + `/diff` command + `cbh diff` (new, 84 → 85 skills,
+  15 → 16 commands).** Deterministic diff engine (`engine/diff.py`, unit-tested in
+  `engine/test_diff.py`) compares the current `recon/<target>/manifest.json` against
+  the most recent snapshot in `recon/<target>/.snapshots/` and surfaces only what
+  changed since the last recon run: new assets, new ranked-surface entries,
+  tech-stack drift, status-code flips (a 403→200 flip is a common fix-regression
+  signal), and newly-flagged secrets. Written for continuous-scope/retainer programs
+  and re-tested bounty targets, where a full re-recon re-surfaces hundreds of
+  already-cleared hosts instead of pointing straight at genuinely new surface. The
+  comparison itself is a pure function over two manifest dicts — no HTTP, no LLM
+  judgment — matching the deterministic trust model already used by `engine/scope.py`
+  for scope enforcement. `cbh diff target.com [--no-save] [--manifest PATH]` writes
+  `recon/<target>/REGRESSION.md` and advances the snapshot baseline.
+
 ### Security
+- **Scope bypass via a backslash in the URL authority — fixed (privately reported).** The
+  deterministic scope gate parsed hosts with `urlparse`, which treats `\` as a normal
+  character, while `requests`/`urllib3` (and browsers) treat it as `/` in the authority. So
+  `http://admin.example.com\@www.example.com/` parsed as the in-scope host `www.example.com`
+  and passed `in_scope_host` / `reject_reason`, while the actual request connected to the
+  out-of-scope host `admin.example.com` — the engine could contact a host it reported as
+  denied (reachable through recon redirect-following, SPA script-src fetches, and the
+  verifier's read-only replay). `engine/scope.py` `_host_of` now **fails closed** on any
+  authority containing a backslash, space, or C0/DEL control character (two parsers can read
+  it differently), while path/query backslashes (Windows LFI `?file=..\..\win.ini`) are left
+  in scope. Regression test: `engine/test_scope_backslash.py`. *Reported privately via
+  responsible disclosure — credit: @speto2 (Tyler Ramey).*
+- **Evidence redaction gap — AWS `SecretAccessKey` / session `Token` now stripped.** The
+  verifier's captured-body redaction (`engine/verifier.py`) matched only the AWS `AccessKeyId`
+  (AKIA…), so a response body carrying full AWS credentials wrote the secret and session token
+  to the local state file in the clear. `_redact` now also strips the value after known
+  sensitive keys (secret-access-key, session/access/refresh/id tokens, client secret, private
+  key, password, CSRF token) and bare STS session tokens, while leaving the deterministic
+  oracle signals untouched. Regression test: `engine/test_verifier_redaction.py`. *Privately
+  reported alongside the scope issue.*
 - **Engine data isolation by default — cross-engagement capture is now opt-in.** The
   autopilot ledger (`engine/memory.py`) wrote confirmed findings, negatives, and
   per-target rollups (hostnames + URLs) to `~/.claude/bughunter/memory/` on **every**
@@ -19,6 +54,15 @@ versioning is loosely [SemVer](https://semver.org/) at the bundle level.
   `/remember`, `/autopilot` command docs. No behaviour removed, no data relocated.
 
 ### Added
+- **Docs: PCAP evidence hygiene, more Bugcrowd VRT mappings, safer CRLF recovery** (folded
+  in-house, reporters credited): `evidence-hygiene` gains a **§4.5 PCAP / PCAPNG sanitization**
+  section — what leaks in a capture, how to export only the PoC flow, and the verify steps
+  (contributed by @Faizee-Asad, #177); `bugcrowd-reporting` §1.3 gains **8 more canonical VRT
+  mappings** (metadata SSRF, unsafe CORS, OAuth state, iterable IDOR, web cache deception, host-
+  header reset poisoning, blind SSRF, privilege-elevating stored XSS) (contributed by @om29dev,
+  #203); and `INSTALL.md`'s CRLF-recovery note now recommends a fresh clone and warns that
+  `git checkout .` / `--renormalize` can discard or over-stage local changes (contributed by
+  @Yunkai030, #233).
 - **Leak-proof attack metrics (`engine/attack_metrics.py`, `--use-metrics`).** An opt-in,
   per-operator store of **generic counters only** — attempts / successes / cost keyed by
   tech-stack signature + vuln-class (+ a generic technique category) — that **never**
@@ -93,6 +137,36 @@ versioning is loosely [SemVer](https://semver.org/) at the bundle level.
   remain Claude-Code-only. New guide: `docs/multi-harness.md`.
 
 ### Fixed
+- **Harness-MCP import crash + wapt dispatch coverage** (built in-house, reporters credited):
+  `setup_harness_mcp.py` reconfigured stdout/stderr to UTF-8 only inside `main()`, so calling
+  the `write_codex` / `write_opencode` / `write_antigravity` helpers directly (as the unit tests
+  and other tooling do) still raised `UnicodeEncodeError` on the arrow glyph under cp1252 — the
+  UTF-8 reconfigure now runs at **import**, covering every entrypoint (reported by
+  @basanta-codexa, #237); and `/hunt` in **wapt mode** loaded only the hand-written `full hunt-*
+  set` list in `hunt-dispatch/SKILL.md`, so **10 skills** added after that list was written
+  (`hunt-jwt-crypto`, `hunt-forgot-password`, `hunt-captcha-bypass`, `hunt-shadow-api`,
+  `hunt-spa-api`, `hunt-fintech-graphql`, `hunt-clickjacking`, `hunt-html-injection`,
+  `hunt-rag-vector`, `hunt-exceptional-conditions`) never loaded — they are now in the list, and
+  `engine/skill_map.py` fails (via the existing skill-lint CI) when an installed `hunt-*` skill
+  is missing from it, so the list cannot drift again (reported by @speto2, #225).
+- **Scope hardening + landing-page robustness** (built in-house, reporters credited):
+  the deterministic scope gate did not canonicalize **IDN hosts**, so a Unicode hostname
+  and its punycode spelling resolved to different hosts and a punycode deny rule missed
+  the Unicode spelling (CWE-176) — both `_host_of` and `_normalize_rule` now reduce to the
+  IDNA A-label, fail-closed on un-encodable hosts (reported by @viwe-monai, #224); `cbh
+  scope import` read the **out-of-scope** side fail-open in three ways — a `Type | Asset`
+  table let the type column ("Web") be taken as the identifier, a host carrying a
+  description fell through to free-text notes instead of a deny rule, and markdown emphasis
+  leaked `**` into the host — all now deny or route to manual review, never silently drop
+  an excluded host (reported by @devloper961-maker, #235); the hunt/validate agents were
+  never told the **out-of-scope list**, so an excluded subdomain under an in-scope bare
+  domain (`admin.example.com` under `example.com`) looked allowed until `_scope_audit`
+  caught it after the fact — `_roe()` now carries the exclusions and explains bare-domain /
+  wildcard / regex matching (reported by @fairoz-539, #226); and the GitHub Pages landing
+  rendered a near-blank page with **JavaScript disabled or reduced-motion** — reveal
+  sections are now hidden only when JS runs, the stat numbers ship in the HTML, the surface
+  matrix is static, and the terminal stays visible under reduced-motion (reported by
+  @speto2, #234).
 - **Five terminal-tooling / engine correctness bugs** (built in-house, reporters credited):
   `cbh classify` matched URL path patterns against the whole URL, so a keyword in the
   hostname (`verify.example.com`, `cart.shop.example`) false-triggered a skill — it now
@@ -243,7 +317,7 @@ versioning is loosely [SemVer](https://semver.org/) at the bundle level.
 
 ## [1.x]
 
-- Initial public release: 51 skills + 15 slash commands, vendored foundation from
+- Initial public release: 51 skills + 16 slash commands, vendored foundation from
   `shuvonsec/claude-bug-bounty`, Burp MCP integration, recon pipeline.
 
 [Unreleased]: https://github.com/elementalsouls/Claude-BugHunter/compare/v2.1...HEAD

@@ -29,15 +29,42 @@ def _regex(pattern):
     return re.compile(pattern, re.IGNORECASE)
 
 
+def _to_alabel(host):
+    """Canonicalize an IDN host to its IDNA A-label (punycode). ASCII passes
+    through byte-identical; an un-encodable host returns None so callers can
+    fail closed (CWE-176: a Unicode host and its punycode spelling are one host,
+    so a punycode deny rule must also reject the Unicode spelling)."""
+    if not host or host.isascii():
+        return host
+    try:
+        return host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return None
+
+
 def _host_of(target):
     t = target.strip()
     if "://" not in t:
         t = "//" + t
     try:
         parsed = urlparse(t)
-        return (parsed.hostname or "").lower().rstrip(".")
+        # Fail closed on an ambiguous authority: urlparse treats a backslash as a
+        # normal character, but requests/urllib3 (and browsers) treat it as `/` in
+        # the authority, so `admin.example.com\@www.example.com` parses here as
+        # `www.example.com` while the request actually connects to
+        # `admin.example.com` — a scope bypass. Any backslash, space, or C0/DEL
+        # control char in the netloc means two parsers can disagree on the host;
+        # drop it so default-deny keeps it out of scope. Path/query backslashes
+        # (Windows LFI `?file=..\..\win.ini`) are untouched — they are not in the
+        # netloc.
+        if any(c == "\\" or ord(c) <= 0x20 or ord(c) == 0x7f for c in parsed.netloc):
+            return ""
+        host = (parsed.hostname or "").lower().rstrip(".")
     except ValueError:
         return ""
+    # Fail closed: an un-encodable IDN host is dropped so it matches nothing and
+    # default-deny keeps it out of scope.
+    return _to_alabel(host) or ""
 
 
 def _match(pattern, host):
@@ -104,6 +131,9 @@ def _normalize_rule(rule):
     except ValueError:
         host = ""
     host = (host or core.split("/")[0].split(":")[0]).rstrip(".")
+    # Same A-label canonicalization as _host_of so a Unicode rule and a punycode
+    # rule for the same host normalize to one form. Keep as-written on invalid IDNA.
+    host = _to_alabel(host) or host
     return ("*." + host) if wild else host
 
 
